@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique // +2507XXXXXXXX
+  isVerified  Boolean  @default(false)
+  hasPremium  Boolean  @default(false)
+  language    String   @default("rw")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reports          Report[]
+  licenseCodes     LicenseCode[]
+  loanApplications LoanApplication[]
+}
+
+model OtpCode {
+  id          String   @id @default(uuid())
+  phoneNumber String
+  code        String // plain 6-digit code (short-lived, deleted on use)
+  attempts    Int      @default(0)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([phoneNumber])
+}
+
+enum LicenseStatus {
+  issued
+  redeemed
+  revoked
+}
+
+model LicenseCode {
+  id            String        @id @default(uuid())
+  userId        String?
+  user          User?         @relation(fields: [userId], references: [id])
+  codeHash      String        @unique
+  status        LicenseStatus @default(issued)
+  momoReference String? // MoMo transaction ID given as proof of payment
+  amountPaid    Int?
+  issuedAt      DateTime      @default(now())
+  redeemedAt    DateTime?
+}
+
+enum ReportStatus {
+  active
+  revoked
+}
+
+model Report {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id])
+  periodStart   DateTime
+  periodEnd     DateTime
+  summaryJson   Json // aggregated totals only, never raw transactions
+  veloScore     Int
+  pdfPath       String? // filled in once PDF generation/storage is added
+  verifyCode    String       @unique // e.g. "VLO-7F2K9Q"
+  signature     String // Ed25519 signature over the report contents
+  status        ReportStatus @default(active)
+  downloadCount Int          @default(0)
+  expiresAt     DateTime?
+  createdAt     DateTime     @default(now())
+
+  loanApplications LoanApplication[]
+
+  @@index([userId])
+}
+
+enum Provider {
+  MTN
+  AIRTEL
+}
+
+enum TransactionType {
+  income
+  expense
+  fee
+}
+
+enum TransactionCategory {
+  transfer
+  merchant
+  electricity
+  water
+  government
+  tax
+  withdrawal
+  airtime
+  other
+}
+
+model ParsingRule {
+  id              String              @id @default(uuid())
+  name            String              @unique // e.g. MTN_RECEIVED
+  provider        Provider
+  transactionType TransactionType
+  category        TransactionCategory @default(other)
+  pattern         String // regex with named groups, executed on the device
+  sample          String? // an SMS the pattern must match; checked on save
+  priority        Int                 @default(100) // lower is tried first
+  description     String?
+  version         Int                 @default(1)
+  isActive        Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+}
+
+// Weights + score bands the app downloads and uses to compute the Velo score.
+// The actual computation runs on the device; this only defines the formula,
+// so it can be tuned centrally without an app release (like ParsingRule).
+model ScoringConfig {
+  id        String   @id @default(uuid())
+  version   Int      @unique
+  maxScore  Int      @default(1000)
+  factors   Json // [{ key, label, weight, description? }]
+  bands     Json // [{ min, max, label, recommendation? }]
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+enum LenderType {
+  SACCO
+  BANK
+  MFI
+}
+
+model Lender {
+  id           String     @id @default(uuid())
+  name         String
+  type         LenderType @default(SACCO)
+  description  String?
+  logoUrl      String?
+  minScore     Int        @default(0) // minimum Velo score to be eligible
+  minAmount    Int?
+  maxAmount    Int?
+  interestRate Float? // annual %, indicative
+  contactPhone String?
+  contactEmail String?
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  loanApplications LoanApplication[]
+}
+
+enum LoanApplicationStatus {
+  submitted
+  under_review
+  approved
+  rejected
+  withdrawn
+}
+
+model LoanApplication {
+  id           String                @id @default(uuid())
+  userId       String
+  user         User                  @relation(fields: [userId], references: [id])
+  lenderId     String
+  lender       Lender                @relation(fields: [lenderId], references: [id])
+  reportId     String? // the signed report attached as proof
+  report       Report?               @relation(fields: [reportId], references: [id])
+  amount       Int
+  purpose      String?
+  scoreAtApply Int // Velo score captured from the report at apply time
+  status       LoanApplicationStatus @default(submitted)
+  lenderNote   String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([userId])
+  @@index([lenderId])
+}
+
+model ContentTip {
+  id        String   @id @default(uuid())
+  title     String
+  body      String
+  language  String   @default("rw") // rw | en | fr
+  category  String? // saving | borrowing | budgeting | general
+  priority  Int      @default(100) // lower shows first
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([language, isActive])
+}
